@@ -1,0 +1,416 @@
+---
+title: "Prediction assignment"
+author: "A.J.Nicholson"
+date: "Tuesday, April 21, 2015"
+output: pdf_document
+---
+
+###Introduction
+
+This analysis' aim is to predict the manner in which participants performed barbell lifts.
+
+The data use in the analysis found at http://groupware.les.inf.puc-rio.br/har. It consists of data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+
+```{r data loading,cache=TRUE,warning=FALSE}
+#Loading in training data
+TrainURL<-"http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(TrainURL,"train.csv")
+train<-read.csv("train.csv", header=TRUE)
+
+#loading in testing data 
+TestURL<-"http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(TestURL,"test.csv")
+test<-read.csv("test.csv", header=TRUE)
+
+```
+ 
+The train dataset was split into two so that out of sample accuracy could be estimated.   
+ 
+```{r creating test data set,warning=FALSE,message=FALSE}
+#creating a testing set 
+library(caret)
+inTrain <- createDataPartition(y=train$classe,
+                               p=0.75, list=FALSE)
+testing <- train[-inTrain,]
+train<-train[inTrain,]
+```
+
+### Cleaning Data/ Reducing Variables
+
+The dataset consists of 160 variables, this is too many to realistically use in a model as independent variables. So initial stage of this analysis is to reduce these down to a more manageable number
+
+The first step in doing so is to ignore the 3 time stamp variables as well as new window and num window. I am also excluding the user name variable, as training a model to specific users limits future uses.
+
+Next it is clear that the data can mostly be divided into 4 groups, corresponding to the 4 separate sensors; forearm, arm, dumbbell and belt. As such I produced 4 separate dataset to make further decomposition of variables easier; each of these dataset also contained copies of the outcome (classe).
+ 
+
+```{r splitting datasets example,warning=FALSE}
+#Example of spliting data into sensor groups (forearm)
+forearm<-grep("forearm",names(train))
+trainFA<-train[,forearm];trainFA$classe<-train$classe
+```
+
+```{r spliting datasets,echo=FALSE,warning=FALSE}
+arm<-grep("arm",names(train));arm<-arm[arm!=forearm]
+trainA<-train[,arm];trainA$classe<-train$classe
+
+belt<-grep("belt",names(train))
+trainB<-train[,belt];trainB$classe<-train$classe
+
+dumbbell<-grep("dumbbell",names(train))
+trainD<-train[,dumbbell];trainD$classe<-train$classe
+```
+
+Summaries (acquired with summary())of each data frame show that there are fields in each with large numbers of NA's. For example in the arm data the follow variables contain NA's in 19216 of 19622 observations.  
+
+```{r Na field example, warning=FALSE,results='asis'}
+#Example of variables with large numbers of NA values (arm data)
+SumA<-(data.frame(summary(trainA)))[grep("NA's",summary(trainA)),]
+NAA<-as.vector(SumA$Var2)
+NAA
+```
+ 
+ 
+```{r NA fields,echo=FALSE,warning=FALSE}
+SumB<-(data.frame(summary(trainB)))[grep("NA's",summary(trainB)),];NAB<-as.vector(SumB$Var2)
+
+SumFA<-(data.frame(summary(trainFA)))[grep("NA's",summary(trainFA)),]
+
+SumD<-(data.frame(summary(trainD)))[grep("NA's",summary(trainD)),]
+```
+
+As you can see these are all in some way a summary statistic; e.g. variance, average. In addition to these fields there are also columns for kurtosis and skewness, which instead of NA are mainly populated with missing values. As all of these variables are clear derivatives of the other variables, so will be excluded.   
+
+
+```{r removing NA variables example,warning=FALSE}
+#removing variables that had large numbers of NA's (example on Arm data)
+NAA<-as.vector(SumA$Var2);NAA<-paste(NAA,collapse="|");NAA<-gsub(" ","",NAA,fixed=TRUE)
+NAA<-grep(NAA,names(trainA));trainA<-trainA[,-NAA]
+
+#removing kurtosis and skewness fields (example on arm data)
+KandS<-grep("kurtosis|skewness",names(trainA));trainA<-trainA[,-KandS]
+```
+
+```{r removing unwanted variables,echo=FALSE,warning=FALSE}
+#Belt
+NAB<-as.vector(SumB$Var2);NAB<-paste(NAB,collapse="|");NAB<-gsub(" ","",NAB,fixed=TRUE)
+NAB<-grep(NAB,names(trainB));trainB<-trainB[,-NAB]
+KandS<-grep("kurtosis|skewness",names(trainB));trainB<-trainB[,-KandS]
+MMA<-grep("max|min|amplitude",names(trainB));trainB<-trainB[,-MMA]
+
+#forearm
+NAFA<-as.vector(SumFA$Var2);NAFA<-paste(NAFA,collapse="|");NAFA<-gsub(" ","",NAFA,fixed=TRUE)
+NAFA<-grep(NAFA,names(trainFA));trainFA<-trainFA[,-NAFA]
+KandS<-grep("kurtosis|skewness",names(trainFA));trainFA<-trainFA[,-KandS]
+MMA<-grep("max|min|amplitude",names(trainFA));trainFA<-trainFA[,-MMA]
+
+#Dumbbell
+NAD<-as.vector(SumD$Var2);NAD<-paste(NAD,collapse="|");NAD<-gsub(" ","",NAD,fixed=TRUE)
+NAD<-grep(NAD,names(trainD));trainD<-trainD[,-NAD]
+KandS<-grep("kurtosis|skewness",names(trainD));trainD<-trainD[,-KandS]
+MMA<-grep("max|min|amplitude",names(trainD));trainD<-trainD[,-MMA]
+```
+
+The next stage is the production of feature plots. So that these are easily visible I only included some of the variables in each plot.
+
+To look at meaningful relationships I group the variable by type of reading; i.e all magnetometer reading for a particular sensor (magnet_[sensor]_[x|Y|z]). I also produced plots in which the variables where grouped by the axis they described; e.g the x- axis for the arm data is described by the variables rollarm, gyros_arm_x, magnet_arm_x and accel_arm_x.
+
+Each plot also contained and was coloured by the outcome variable (classe), so that any clear separation of the classe by single and combined measures could be seen.
+
+
+
+```{r example feature plots,warning=FALSE}
+library(caret);library(ggplot2)
+#Y axis measures forearm
+featurePlot(x=trainFA[,c("pitch_forearm","gyros_forearm_y","magnet_forearm_y","accel_forearm_y","classe")],
+            y = trainFA$classe,
+            plot="pairs")
+#magnetrometer measures forearm
+featurePlot(x=trainFA[,c("magnet_forearm_x","magnet_forearm_y","magnet_forearm_z","classe")],
+            y = trainFA$classe,
+            plot="pairs")
+#accelatrometer measure belt
+featurePlot(x=trainB[,c("accel_belt_x","accel_belt_y","accel_belt_z", "total_accel_belt")],
+            y = trainB$classe,
+            plot="pairs")
+#gyro's arm
+featurePlot(x=trainA[,c("gyros_arm_x","gyros_arm_y","gyros_arm_z","classe")],
+            y = trainA$classe,
+            plot="pairs")
+```
+
+The first thing to note from the feature plots is that no single variable or combination of two variable produced a clear separation of classe. This suggested a successful model would have to include multiple variables.
+
+It is also clear that a lot of the variables are interrelated, e.g. magnet_forearm_y and accel_forearm_y: Many of which are complex relationships, e.g. magnetrometer data . This suggest that some kind of interaction needs to be considered when constructing the prediction model.
+
+Unsurprisingly the total_accel variable shows a strong relationship with the other accel variable in particular the accel in the z direction. I decided to remove this variable from consideration as it is a clear product of other variables, which will be used in the model instead.
+
+The other thing that is evident from the feature plots is that the gyro reading for the forearm and dumbbell, in all axes, are almost exclusively 0's. As such this isn't a useful predictors so will be removed.
+  
+
+
+```{r removal of gyro and total_accel,echo=FALSE}
+#removing gyro's on dumbbell and forearm
+Gyro<-grep("gyros",names(trainD));trainD<-trainD[,-Gyro]
+Gyro<-grep("gyros",names(trainFA));trainFA<-trainFA[,-Gyro]
+
+#removing total accel from all
+TA<-grep("total_accel",names(trainA));trainA<-trainA[,-TA]
+TA<-grep("total_accel",names(trainD));trainD<-trainD[,-TA]
+TA<-grep("total_accel",names(trainFA));trainFA<-trainFA[,-TA]
+TA<-grep("total_accel",names(trainB));trainB<-trainB[,-TA]
+```
+
+### Model Construction 
+
+Now that I have my set of variable the next step is to explore different possible models.
+
+All the model I will construct for this analysis will use the random forest method, as it works well on non-parametric data with factor outcomes and produces high accuracy. I will use this within the train() , as appose to randomforest(),function as by default it cross validates, by bootstrapping through 25 reps.
+
+I will compare 5 different models with different treatment of variables:
+
+
+1. Model One: Simple use of all variables
+
+```{r model one,cache=TRUE,warning=FALSE,message=FALSE}
+#getting variable names as a character string
+Variables<-as.vector(names(c(trainA[,-13],trainB[,-13],trainD[,-10],trainFA[,-10])))
+Variables<-paste(Variables,collapse="|");Variables<-gsub(" ","",Variables,fixed=TRUE)
+
+#selecting those varibles from the train data set, while excluding eronious matches
+not<-grep("avg|max|kurtosis|amplitude|stddev|skewness|var|min",names(train))
+Variables<-grep(Variables,names(train[,-not]),value=TRUE)
+
+#running the model
+set.seed(456)
+model1<-train(train$classe ~ .,method="rf",data=train[,Variables])
+```
+
+2. Model Two: All variable processed into Principal Components
+
+```{r model two,cache=TRUE}
+#producing principal components
+PCA<-preProcess(train[,Variables],method="pca")
+trainPC <- predict(PCA,train[,Variables])
+
+#running the model
+set.seed(456)
+model2 <- train(train$classe ~ .,method="rf",data=trainPC)
+```
+
+3. Model Three: Pre-processing variable from each sensor into principal components
+
+```{r model three, cache=TRUE,echo=FALSE}
+A<-as.vector(names(trainA[,-13]));A<-paste(A,collapse="|")
+A<-gsub(" ","",A,fixed=TRUE);A<-grep(A,names(train[,-not]),value=TRUE)
+PCAa<-preProcess(train[,A],method="pca");PCAA<-predict(PCAa,train[,A])
+
+fa<-as.vector(names(trainFA[,-10]));fa<-paste(fa,collapse="|")
+fa<-gsub(" ","",fa,fixed=TRUE);fa<-grep(fa,names(train[,-not]),value=TRUE)
+PCAfa<-preProcess(train[,fa],method="pca");PCAFa<-predict(PCAfa,train[,fa])
+
+B<-as.vector(names(trainB[,-13]));B<-paste(B,collapse="|")
+B<-gsub(" ","",B,fixed=TRUE);B<-grep(B,names(train[,-not]),value=TRUE)
+PCAb<-preProcess(train[,B],method="pca");PCAB<-predict(PCAb,train[,B])
+```
+
+```{r model three visible,cache=TRUE}
+#example of producing principal components from each sensor (dumbbell)
+D<-as.vector(names(trainD[,-10]));D<-paste(D,collapse="|")
+D<-gsub(" ","",D,fixed=TRUE);D<-grep(D,names(train[,-not]),value=TRUE)
+PCAd<-preProcess(train[,D],method="pca");PCAD<-predict(PCAd,train[,D])
+
+#putting all principal components into a single dataframe, with unique names for each variable
+PCA1<-cbind(PCAA,PCAB,PCAD,PCAFa)
+names(PCA1)<-c("a1","a2","a3","a4","a5","a6","a7","a8","b1","b2","b3","b4","b5","b6","d1","d2","d3","d4","d5","d6","fa1","fa2","fa3","fa4","fa5","fa6","fa7")
+
+#running the model
+set.seed(456)
+model3 <- train(train$classe ~ .,method="rf",data=PCA1)
+
+```
+
+4. Model Four: Principal components of each type of reading for each sensor, this excludes the pitch, yaw and roll variables.
+
+```{r model four,echo=FALSE,cache=TRUE}
+gyroA<-grep("gyros_arm_x|gyros_arm_y|gyros_arm_z",names(train[,-not]),value=TRUE)
+ga<-preProcess(train[,gyroA],method="pca");gA<-predict(ga,train[,gyroA])
+gyroB<-grep("gyros_belt_x|gyros_belt_y|gyros_belt_z",names(train[,-not]),value=TRUE)
+gb<-preProcess(train[,gyroB],method="pca");gB<-predict(gb,train[,gyroB])
+magA<-grep("magnet_arm_x|magnet_arm_y|magnet_arm_z",names(train[,-not]),value=TRUE)
+ma<-preProcess(train[,magA],method="pca");mA<-predict(ma,train[,magA])
+magB<-grep("magnet_belt_x|magnet_belt_y|magnet_belt_z",names(train[,-not]),value=TRUE)
+mb<-preProcess(train[,magB],method="pca");mB<-predict(mb,train[,magB])
+magD<-grep("magnet_dumbbell_x|magnet_dumbbell_y|magnet_dumbbell_z",names(train[,-not]),value=TRUE)
+md<-preProcess(train[,magD],method="pca");mD<-predict(md,train[,magD])
+magFA<-grep("magnet_forearm_x|magnet_forearm_y|magnet_forearm_z",names(train[,-not]),value=TRUE)
+mfa<-preProcess(train[,magFA],method="pca");mFa<-predict(mfa,train[,magFA])
+accA<-grep("accel_forearm_x|accel_forearm_y|accel_forearm_z",names(train[,-not]),value=TRUE)
+aa<-preProcess(train[,accA],method="pca");aA<-predict(aa,train[,accA])
+accB<-grep("accel_forearm_x|accel_forearm_y|accel_forearm_z",names(train[,-not]),value=TRUE)
+ab<-preProcess(train[,accB],method="pca");aB<-predict(ab,train[,accB])
+accD<-grep("accel_forearm_x|accel_forearm_y|accel_forearm_z",names(train[,-not]),value=TRUE)
+ad<-preProcess(train[,accD],method="pca");aD<-predict(ad,train[,accD])
+```
+
+```{r model four visible,cache=TRUE}
+#example of principal component for each type of measurement (accelerometer forearm)
+accFA<-grep("accel_forearm_x|accel_forearm_y|accel_forearm_z",names(train[,-not]),value=TRUE)
+afa<-preProcess(train[,accFA],method="pca");aFa<-predict(afa,train[,accFA])
+
+#creating one dataframe with all PCA's with unique names
+PCA2<-cbind(aFa,aD,aB,aA,mFa,mD,mB,mA,gB,gA)
+names(PCA2)<-c("afa1","afa2","afa3","ad1","ad2","ad3","ab1","ab2","ab3","aa1","aa2","aa3","mfa1","mfa2","mfa3","md1","md2","md3","mb1","mb2","mb3","ma1","ma2","gb1","gb2","gb3","ga1","ga2")
+
+#running model
+set.seed(456)
+model4 <- train(train$classe ~ .,method="rf",data=PCA2)
+```
+
+5. Model Five: Principal components of each axis for each sensor.
+
+```{r model five, echo=FALSE,cache=TRUE}
+XA<-grep("roll_arm|gyros_arm_x|magnet_arm_x|accel_arm_x",names(train[,-not]),value=TRUE)
+xa<-preProcess(train[,XA],method="pca");xA<-predict(xa,train[,XA])
+XB<-grep("roll_belt|gyros_belt_x|magnet_belt_x|accel_belt_x",names(train[,-not]),value=TRUE)
+xb<-preProcess(train[,XB],method="pca");xB<-predict(xb,train[,XB])
+XFA<-grep("roll_forearm|magnet_forearm_x|accel_forearm_x",names(train[,-not]),value=TRUE)
+xfa<-preProcess(train[,XFA],method="pca");xFa<-predict(xfa,train[,XFA])
+XD<-grep("roll_dumbbell|magnet_dumbbell_x|accel_dumbbell_x",names(train[,-not]),value=TRUE)
+xd<-preProcess(train[,XD],method="pca");xD<-predict(xd,train[,XD])
+
+YA<-grep("pitch_arm|gyros_arm_y|magnet_arm_y|accel_arm_y",names(train[,-not]),value=TRUE)
+ya<-preProcess(train[,YA],method="pca");yA<-predict(ya,train[,YA])
+YB<-grep("pitch_belt|gyros_belt_y|magnet_belt_y|accel_belt_y",names(train[,-not]),value=TRUE)
+yb<-preProcess(train[,YB],method="pca");yB<-predict(yb,train[,YB])
+YFA<-grep("pitch_forearm|magnet_forearm_y|accel_forearm_y",names(train[,-not]),value=TRUE)
+yfa<-preProcess(train[,YFA],method="pca");yFa<-predict(yfa,train[,YFA])
+YD<-grep("pitch_dumbbell|magnet_dumbbell_y|accel_dumbbell_y",names(train[,-not]),value=TRUE)
+
+yd<-preProcess(train[,YD],method="pca");yD<-predict(yd,train[,YD])
+ZA<-grep("yaw_arm|gyros_arm_z|magnet_arm_z|accel_arm_z",names(train[,-not]),value=TRUE)
+za<-preProcess(train[,ZA],method="pca");zA<-predict(za,train[,ZA])
+ZB<-grep("yaw_belt|gyros_belt_z|magnet_belt_z|accel_belt_z",names(train[,-not]),value=TRUE)
+zb<-preProcess(train[,ZB],method="pca");zB<-predict(zb,train[,ZB])
+ZFA<-grep("yaw_forearm|magnet_forearm_z|accel_forearm_z",names(train[,-not]),value=TRUE)
+zfa<-preProcess(train[,ZFA],method="pca");zFa<-predict(zfa,train[,ZFA])
+
+```
+
+```{r model five visible, cache=TRUE}
+#example of principal component analysis for each axis (dumbbell z axis)
+ZD<-grep("yaw_dumbbell|magnet_dumbbell_z|accel_dumbbell_z",names(train[,-not]),value=TRUE)
+zd<-preProcess(train[,ZD],method="pca");zD<-predict(zd,train[,ZD])
+
+#putting all principal components in a single data frame with unique names for each variable
+PCA3<-cbind(xA,xB,xD,xFa,yA,yB,yD,yFa,zA,zB,zD,zFa)
+names(PCA3)<-c("xa1","xa2","xa3","xb1","xb2","xb3","xd1","xd2","xd3","xfa1","xfa2","xfa3",
+               "ya1","ya2","ya3","ya4","yb1","yb2","yb3","yb4","yd1","yd2","yd3","yfa1","yfa2","yfa3",
+               "za1","za2","za3","zb1","zb2","zb3","zb4","zd1","zd2","zfa1","zfa2","zfa3")
+
+#running the model
+set.seed(456)
+model5<-train(train$classe ~ .,method="rf",data=PCA3)
+
+```
+
+###Model Evaluation
+
+In order to evaluate the models each is applied to the testing data set. This will give an out of sample error estimation.
+
+For the models involving principal components the same formula, as that used in the train set, is applied to the relevant variables in the testing data.
+ 
+
+```{r creating require PCAs,echo=FALSE,cache=TRUE}
+#model 3
+PCAA<-predict(PCAa,testing[,A]);PCAB<-predict(PCAb,testing[,B]);PCAD<-predict(PCAd,testing[,D]);PCAFa<-predict(PCAfa,testing[,fa])
+PCA1<-cbind(PCAA,PCAB,PCAD,PCAFa)
+names(PCA1)<-c("a1","a2","a3","a4","a5","a6","a7","a8","b1","b2","b3","b4","b5","b6","d1","d2","d3","d4","d5","d6","fa1","fa2","fa3","fa4","fa5","fa6","fa7")
+
+#model 4
+gA<-predict(ga,testing[,gyroA]);gB<-predict(gb,testing[,gyroB])
+mA<-predict(ma,testing[,magA]);mB<-predict(mb,testing[,magB]);mD<-predict(md,testing[,magD]);mFa<-predict(mfa,testing[,magFA])
+aA<-predict(aa,testing[,accA]);aB<-predict(ab,testing[,accB]);aD<-predict(ad,testing[,accD]);aFa<-predict(afa,testing[,accFA])
+PCA2<-cbind(aFa,aD,aB,aA,mFa,mD,mB,mA,gB,gA)
+names(PCA2)<-c("afa1","afa2","afa3","ad1","ad2","ad3","ab1","ab2","ab3","aa1","aa2","aa3","mfa1","mfa2","mfa3","md1","md2","md3","mb1","mb2","mb3","ma1","ma2","gb1","gb2","gb3","ga1","ga2")
+
+#model 5
+zD<-predict(zd,testing[,ZD]);zA<-predict(za,testing[,ZA]);zB<-predict(zb,testing[,ZB]);zFa<-predict(zfa,testing[,ZFA])
+yD<-predict(yd,testing[,YD]);yA<-predict(ya,testing[,YA]);yB<-predict(yb,testing[,YB]);yFa<-predict(yfa,testing[,YFA])
+xD<-predict(xd,testing[,XD]);xA<-predict(xa,testing[,XA]);xB<-predict(xb,testing[,XB]);xFa<-predict(xfa,testing[,XFA])
+
+PCA3<-cbind(xA,xB,xD,xFa,yA,yB,yD,yFa,zA,zB,zD,zFa)
+names(PCA3)<-c("xa1","xa2","xa3","xb1","xb2","xb3","xd1","xd2","xd3","xfa1","xfa2","xfa3",
+               "ya1","ya2","ya3","ya4","yb1","yb2","yb3","yb4","yd1","yd2","yd3","yfa1","yfa2","yfa3",
+               "za1","za2","za3","zb1","zb2","zb3","zb4","zd1","zd2","zfa1","zfa2","zfa3")
+
+```
+
+```{r testing,warning=FALSE,message=FALSE}
+#model 1
+test1 <- predict(model1,newdata=testing)
+confusion1<-confusionMatrix(testing$classe,test1)
+#model 2
+test2 <- predict(PCA,testing[,Variables]);test2<-predict(model2,test2)
+confusion2<-confusionMatrix(testing$classe,test2)
+#model 3
+test3<-predict(model3,PCA1)
+confusion3<-confusionMatrix(testing$classe,test3)
+#model 4
+test4<-predict(model4,PCA2)
+confusion4<-confusionMatrix(testing$classe,test4)
+#model 5
+test5<-predict(model5,PCA3)
+confusion5<-confusionMatrix(testing$classe,test5)
+```
+
+In-sample accuracy is extractible from the model$results. This can be compared with out of sample accuracy extracted from confusion_matrix$overall.
+
+```{r accuracy table,results='asis',warning=FALSE,message=FALSE,echo=FALSE}
+accuracy<-data.frame(model=c(1,2,3,4,5),in_sample_accuracy=c(model1$results[1,2], model2$results[1,2], model3$results[1,2], model4$results[1,2], model5$results[1,2]),out_of_sample_accuracy=c(confusion1$overall[1],confusion2$overall[1],confusion3$overall[1],confusion4$overall[1],confusion5$overall[1]),Variables=c(41,7,26,27,37))
+library(knitr)
+kable(accuracy,digits=3, caption="estimation of in and out of sample error",format="html")
+```
+
+From this table there is little difference in the models in terms of accuracy, with model 1 coming out on top with an in sample accuracy of `r accuracy[1,2]` and an out of sample accuracy of `r accuracy[1,3]`. Model 2 and model 4 show the lowest accuracy at around 96%. 
+
+A further way of comparing the variables is by comparing their predictions of the 20 variables in the test dataset. (n.b. the actual classe is not given in the test data set).
+
+```{r predicting 20 test cases,echo=FALSE}
+test1 <- predict(model1,newdata=test)
+
+test2 <- predict(PCA,test[,Variables]);test2<-predict(model2,test2)
+
+PCAA<-predict(PCAa,test[,A]);PCAB<-predict(PCAb,test[,B]);PCAD<-predict(PCAd,test[,D]);PCAFa<-predict(PCAfa,test[,fa])
+PCA1<-cbind(PCAA,PCAB,PCAD,PCAFa)
+names(PCA1)<-c("a1","a2","a3","a4","a5","a6","a7","a8","b1","b2","b3","b4","b5","b6","d1","d2","d3","d4","d5","d6","fa1","fa2","fa3","fa4","fa5","fa6","fa7")
+test3<-predict(model3,PCA1)
+
+gA<-predict(ga,test[,gyroA]);gB<-predict(gb,test[,gyroB])
+mA<-predict(ma,test[,magA]);mB<-predict(mb,test[,magB]);mD<-predict(md,test[,magD]);mFa<-predict(mfa,test[,magFA])
+aA<-predict(aa,test[,accA]);aB<-predict(ab,test[,accB]);aD<-predict(ad,test[,accD]);aFa<-predict(afa,test[,accFA])
+PCA2<-cbind(aFa,aD,aB,aA,mFa,mD,mB,mA,gB,gA)
+names(PCA2)<-c("afa1","afa2","afa3","ad1","ad2","ad3","ab1","ab2","ab3","aa1","aa2","aa3","mfa1","mfa2","mfa3","md1","md2","md3","mb1","mb2","mb3","ma1","ma2","gb1","gb2","gb3","ga1","ga2")
+test4<-predict(model4,PCA2)
+zD<-predict(zd,test[,ZD]);zA<-predict(za,test[,ZA]);zB<-predict(zb,test[,ZB]);zFa<-predict(zfa,test[,ZFA])
+yD<-predict(yd,test[,YD]);yA<-predict(ya,test[,YA]);yB<-predict(yb,test[,YB]);yFa<-predict(yfa,test[,YFA])
+xD<-predict(xd,test[,XD]);xA<-predict(xa,test[,XA]);xB<-predict(xb,test[,XB]);xFa<-predict(xfa,test[,XFA])
+
+PCA3<-cbind(xA,xB,xD,xFa,yA,yB,yD,yFa,zA,zB,zD,zFa)
+names(PCA3)<-c("xa1","xa2","xa3","xb1","xb2","xb3","xd1","xd2","xd3","xfa1","xfa2","xfa3",
+               "ya1","ya2","ya3","ya4","yb1","yb2","yb3","yb4","yd1","yd2","yd3","yfa1","yfa2","yfa3",
+               "za1","za2","za3","zb1","zb2","zb3","zb4","zd1","zd2","zfa1","zfa2","zfa3")
+test5<-predict(model5,PCA3)
+
+prediction<-data.frame(test1=as.character(test1),test2=as.character(test2),test3=as.character(test3),test4=as.character(test4),test5=as.character(test5),row.names=c(1:20))
+kable(prediction,caption="predicted values for 20 test cases for each model",format="html")
+```
+
+In general the predictions are similar across all models. Test 2 and test 4 both predict variables differently, in the 3 and 6 rows respectively. 
+
+###Model selection
+
+All models performed relatively well with high accuracy both in and out of sample. When picking a preferred model both model 2 and 4 should be discounted because they performed slightly worse; although it should be noted that test 2 only used 7 variables in the model which is significantly less than the others.
+
+Choosing between the remaining three models, model one would be my preferred choice. It scored marginally better on the accuracy measures. However the reason it is really preferential is that it uses straight variables not principal components of variables. This makes it a more interpretable model.
